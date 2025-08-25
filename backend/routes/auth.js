@@ -109,21 +109,26 @@ router.post('/send-otp',
       }
       
       // Log OTP sent
-      await AuditLog.createEntry({
-        actorId: user._id,
-        actorEmail: email,
-        actorRole: user.role,
-        action: 'otp_sent',
-        targetType: 'user',
-        targetId: user._id,
-        ip: req.ip,
-        userAgent: req.get('User-Agent'),
-        metadata: { 
-          success: true,
-          messageId: emailResult.messageId 
-        },
-        severity: 'low'
-      });
+      try {
+        await AuditLog.createEntry({
+          actorId: user._id,
+          actorEmail: email,
+          actorRole: user.role,
+          action: 'otp_sent',
+          targetType: 'user',
+          targetId: user._id,
+          ip: req.ip,
+          userAgent: req.get('User-Agent'),
+          metadata: { 
+            success: true,
+            messageId: emailResult.messageId 
+          },
+          severity: 'low'
+        });
+      } catch (auditError) {
+        logger.error('Audit logging failed for successful OTP:', auditError);
+        // Don't fail the OTP send if audit logging fails
+      }
       
       res.status(200).json({
         success: true,
@@ -137,23 +142,27 @@ router.post('/send-otp',
     } catch (error) {
       logger.error('Send OTP error:', error);
       
-      // Log failed attempt only if user exists
-      if (user) {
-        await AuditLog.createEntry({
-          actorId: user._id,
-          actorEmail: email,
-          actorRole: user.role,
-          action: 'otp_sent',
-          targetType: 'user',
-          targetId: user._id,
-          ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          metadata: { 
-            success: false,
-            error: error.message 
-          },
-          severity: 'medium'
-        });
+      // Log failed attempt only if user exists and has valid ID
+      if (user && user._id) {
+        try {
+          await AuditLog.createEntry({
+            actorId: user._id,
+            actorEmail: email,
+            actorRole: user.role,
+            action: 'otp_sent',
+            targetType: 'user',
+            targetId: user._id,
+            ip: req.ip,
+            userAgent: req.get('User-Agent'),
+            metadata: { 
+              success: false,
+              error: error.message 
+            },
+            severity: 'medium'
+          });
+        } catch (auditError) {
+          logger.error('Audit logging failed for failed OTP:', auditError);
+        }
       }
       
       throw error;
@@ -192,21 +201,8 @@ router.post('/verify-otp',
       const user = await User.findOne({ email });
       
       if (!user) {
-        // Log failed attempt
-        await AuditLog.createEntry({
-          actorId: null,
-          actorEmail: email,
-          actorRole: 'unknown',
-          action: 'login_failed',
-          targetType: 'user',
-          ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          metadata: { 
-            reason: 'user_not_found',
-            email 
-          },
-          severity: 'medium'
-        });
+        // Log failed attempt - skip audit logging since we don't have a valid user ID
+        logger.warn(`Login attempt failed for non-existent user: ${email}`);
         
         return res.status(401).json({
           success: false,
@@ -216,18 +212,22 @@ router.post('/verify-otp',
       
       // Check if account is locked
       if (user.isLocked()) {
-        await AuditLog.createEntry({
-          actorId: user._id,
-          actorEmail: email,
-          actorRole: user.role,
-          action: 'login_failed',
-          targetType: 'user',
-          targetId: user._id,
-          ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          metadata: { reason: 'account_locked' },
-          severity: 'high'
-        });
+        try {
+          await AuditLog.createEntry({
+            actorId: user._id,
+            actorEmail: email,
+            actorRole: user.role,
+            action: 'login_failed',
+            targetType: 'user',
+            targetId: user._id,
+            ip: req.ip,
+            userAgent: req.get('User-Agent'),
+            metadata: { reason: 'account_locked' },
+            severity: 'high'
+          });
+        } catch (auditError) {
+          logger.error('Audit logging failed for locked account:', auditError);
+        }
         
         return res.status(423).json({
           success: false,
@@ -250,21 +250,25 @@ router.post('/verify-otp',
         await user.save();
         
         // Log failed attempt
-        await AuditLog.createEntry({
-          actorId: user._id,
-          actorEmail: email,
-          actorRole: user.role,
-          action: 'login_failed',
-          targetType: 'user',
-          targetId: user._id,
-          ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          metadata: { 
-            reason: 'invalid_otp',
-            attempts: user.otpAttempts 
-          },
-          severity: user.otpAttempts >= 3 ? 'high' : 'medium'
-        });
+        try {
+          await AuditLog.createEntry({
+            actorId: user._id,
+            actorEmail: email,
+            actorRole: user.role,
+            action: 'login_failed',
+            targetType: 'user',
+            targetId: user._id,
+            ip: req.ip,
+            userAgent: req.get('User-Agent'),
+            metadata: { 
+              reason: 'invalid_otp',
+              attempts: user.otpAttempts 
+            },
+            severity: user.otpAttempts >= 3 ? 'high' : 'medium'
+          });
+        } catch (auditError) {
+          logger.error('Audit logging failed for invalid OTP:', auditError);
+        }
         
         return res.status(401).json({
           success: false,

@@ -273,6 +273,7 @@ const AuthPage = () => {
                     console.log('Button clicked!', { mode, email, name })
                     e.preventDefault()
                     e.stopPropagation()
+                    
                     if (mode === 'forgot') {
                       handleForgotPassword(e)
                     } else {

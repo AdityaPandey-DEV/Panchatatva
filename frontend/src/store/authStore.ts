@@ -38,10 +38,16 @@ export const useAuthStore = create<AuthState>()(
         console.log('AuthStore: Sending OTP to:', email)
         set({ loading: true })
         try {
+          console.log('AuthStore: Calling authService.sendOTP...')
           const result = await authService.sendOTP(email)
           console.log('AuthStore: OTP sent successfully:', result)
-        } catch (error) {
+        } catch (error: any) {
           console.error('AuthStore: OTP send failed:', error)
+          console.error('AuthStore: Error details:', {
+            message: error.message,
+            response: error.response?.data,
+            status: error.response?.status
+          })
           throw error
         } finally {
           set({ loading: false })

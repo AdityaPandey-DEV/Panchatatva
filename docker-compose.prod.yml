@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  backend:
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+
+  frontend:
+    restart: unless-stopped
+    
+  mongodb:
+    restart: unless-stopped
+    
+  redis:
+    restart: unless-stopped

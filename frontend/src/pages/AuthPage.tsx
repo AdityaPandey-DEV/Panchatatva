@@ -209,17 +209,18 @@ const AuthPage = () => {
             <CardDescription>{getDescription()}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
+            <form onSubmit={(e) => e.preventDefault()}>
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
 
-            {success && (
-              <Alert>
-                <AlertDescription>{success}</AlertDescription>
-              </Alert>
-            )}
+              {success && (
+                <Alert>
+                  <AlertDescription>{success}</AlertDescription>
+                </Alert>
+              )}
 
             {step === 'email' ? (
               <>
@@ -397,6 +398,7 @@ const AuthPage = () => {
             <div className="text-xs text-gray-500 text-center mt-4">
               By continuing, you agree to our Terms of Service and Privacy Policy
             </div>
+            </form>
           </CardContent>
         </Card>
 

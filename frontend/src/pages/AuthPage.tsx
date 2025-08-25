@@ -9,165 +9,157 @@ import LoadingSpinner from '@/components/ui/loading-spinner'
 import { Scale, Mail, KeyRound, UserPlus, Lock, ArrowLeft } from 'lucide-react'
 
 const AuthPage = () => {
-  console.log('AuthPage rendering...')
-  
   const navigate = useNavigate()
-  const [mode, setMode] = useState<'signin' | 'register' | 'forgot'>('signin')
-  const [step, setStep] = useState<'email' | 'otp' | 'profile'>('email')
-  const [email, setEmail] = useState('')
-  const [otp, setOtp] = useState('')
-  const [name, setName] = useState('')
-  const [role, setRole] = useState<'client' | 'lawyer' | 'judge'>('client')
+  const { sendOTP, verifyOTP, registerUser, loading } = useAuthStore()
+  
+  // State management
+  const [currentStep, setCurrentStep] = useState<'email' | 'otp'>('email')
+  const [authMode, setAuthMode] = useState<'signin' | 'register' | 'forgot'>('signin')
+  const [formData, setFormData] = useState({
+    email: '',
+    otp: '',
+    name: '',
+    role: 'client' as 'client' | 'lawyer' | 'judge'
+  })
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [countdown, setCountdown] = useState(0)
-  
-  const { sendOTP, verifyOTP, registerUser, loading } = useAuthStore()
-  
-    console.log('AuthPage state:', { mode, step, email, loading })
-  
+
+  // Clear form when mode changes
   useEffect(() => {
-    console.log('AuthPage mounted, current mode:', mode)
-  }, [mode])
-  
-  const handleSendOTP = async (e?: React.MouseEvent) => {
-    if (e) e.preventDefault()
-    
-    try {
-      setError('')
-      setSuccess('')
-      
-      console.log('Sending OTP to:', email, 'Mode:', mode)
-      await sendOTP(email)
-      console.log('OTP sent successfully')
-      
-      setStep('otp')
-      setCountdown(300) // 5 minutes
-      
-      if (mode === 'register') {
-        setSuccess('Account created! Please verify your email with the OTP sent.')
-      } else {
-        setSuccess('OTP sent to your email address.')
-      }
-      
-      // Start countdown
-      const interval = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
-    } catch (err: any) {
-      console.error('OTP send error:', err)
-      const errorMsg = err.response?.data?.message || 'Failed to send OTP'
-      setError(errorMsg)
-      setSuccess('')
-    }
-  }
-
-  const handleVerifyOTP = async (e?: React.MouseEvent) => {
-    if (e) e.preventDefault()
-    
-    try {
-      setError('')
-      setSuccess('')
-      
-      console.log('Verifying OTP:', { email, otp, mode, name, role })
-      
-      if (mode === 'register') {
-        console.log('Registering user...')
-        await registerUser(email, otp, name, role)
-        console.log('Registration successful')
-        setSuccess('Registration successful! Redirecting to dashboard...')
-      } else {
-        console.log('Verifying OTP for signin...')
-        await verifyOTP(email, otp)
-        console.log('Signin successful')
-        setSuccess('Sign-in successful! Redirecting to dashboard...')
-      }
-      
-      setTimeout(() => navigate('/dashboard'), 1500)
-    } catch (err: any) {
-      console.error('OTP verification error:', err)
-      const errorMsg = err.response?.data?.message || 'Invalid OTP'
-      setError(errorMsg)
-      setSuccess('')
-    }
-  }
-
-  const handleForgotPassword = async (e?: React.MouseEvent) => {
-    if (e) e.preventDefault()
-    
-    try {
-      setError('')
-      await sendOTP(email)
-      setStep('otp')
-      setSuccess('Password reset OTP sent to your email.')
-      setCountdown(300)
-      
-      const interval = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to send reset OTP')
-    }
-  }
-
-  const resetForm = () => {
-    setStep('email')
-    setEmail('')
-    setOtp('')
-    setName('')
-    setRole('client')
+    setCurrentStep('email')
+    setFormData({
+      email: '',
+      otp: '',
+      name: '',
+      role: 'client'
+    })
     setError('')
     setSuccess('')
     setCountdown(0)
+  }, [authMode])
+
+  // Countdown timer
+  useEffect(() => {
+    if (countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [countdown])
+
+  // Handle input changes
+  const handleInputChange = (field: string, value: string) => {
+    setFormData(prev => ({ ...prev, [field]: value }))
+    setError('')
   }
 
+  // Send OTP
+  const handleSendOTP = async () => {
+    try {
+      // Validation
+      if (!formData.email) {
+        setError('Please enter your email address')
+        return
+      }
+      if (authMode === 'register' && !formData.name) {
+        setError('Please enter your full name')
+        return
+      }
+
+      setError('')
+      setSuccess('')
+      
+      console.log('Sending OTP to:', formData.email)
+      await sendOTP(formData.email)
+      
+      // Move to OTP step
+      setCurrentStep('otp')
+      setCountdown(300) // 5 minutes
+      setSuccess('OTP sent! Please check your email and enter the 6-digit code.')
+      
+      console.log('OTP sent successfully, step changed to:', currentStep)
+    } catch (err: any) {
+      console.error('OTP send error:', err)
+      setError(err.response?.data?.message || 'Failed to send OTP')
+    }
+  }
+
+  // Verify OTP
+  const handleVerifyOTP = async () => {
+    try {
+      if (!formData.otp || formData.otp.length !== 6) {
+        setError('Please enter a valid 6-digit OTP')
+        return
+      }
+
+      setError('')
+      setSuccess('')
+
+      if (authMode === 'register') {
+        await registerUser(formData.email, formData.otp, formData.name, formData.role)
+        setSuccess('Registration successful! Redirecting to dashboard...')
+      } else {
+        await verifyOTP(formData.email, formData.otp)
+        setSuccess('Sign-in successful! Redirecting to dashboard...')
+      }
+
+      setTimeout(() => navigate('/dashboard'), 1500)
+    } catch (err: any) {
+      console.error('OTP verification error:', err)
+      setError(err.response?.data?.message || 'Invalid OTP')
+    }
+  }
+
+  // Resend OTP
+  const handleResendOTP = () => {
+    handleSendOTP()
+  }
+
+  // Format time for countdown
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const getTitle = () => {
-    if (mode === 'register') return 'Create Account'
-    if (mode === 'forgot') return 'Reset Password'
-    return 'Sign In'
+  // Get page title and description
+  const getPageInfo = () => {
+    if (currentStep === 'otp') {
+      return {
+        title: 'Enter OTP',
+        description: `Enter the 6-digit code sent to ${formData.email}`,
+        icon: <KeyRound className="h-5 w-5" />
+      }
+    }
+    
+    switch (authMode) {
+      case 'register':
+        return {
+          title: 'Create Account',
+          description: 'Create your account to access the justice automation system',
+          icon: <UserPlus className="h-5 w-5" />
+        }
+      case 'forgot':
+        return {
+          title: 'Reset Password',
+          description: 'Enter your email to receive a password reset code',
+          icon: <Lock className="h-5 w-5" />
+        }
+      default:
+        return {
+          title: 'Sign In',
+          description: 'Enter your email address to receive an OTP',
+          icon: <Mail className="h-5 w-5" />
+        }
+    }
   }
 
-  const getDescription = () => {
-    if (step === 'otp') {
-      return `Enter the 6-digit code sent to ${email}`
-    }
-    if (mode === 'register') {
-      return 'Create your account to access the justice automation system'
-    }
-    if (mode === 'forgot') {
-      return 'Enter your email to receive a password reset code'
-    }
-    return 'Enter your email address to receive an OTP'
-  }
-
-  const getIcon = () => {
-    if (step === 'otp') return <KeyRound className="h-5 w-5" />
-    if (mode === 'register') return <UserPlus className="h-5 w-5" />
-    if (mode === 'forgot') return <Lock className="h-5 w-5" />
-    return <Mail className="h-5 w-5" />
-  }
+  const pageInfo = getPageInfo()
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="w-full max-w-md">
+        {/* Header */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center mb-4">
             <div className="bg-primary rounded-full p-3">
@@ -176,62 +168,70 @@ const AuthPage = () => {
           </div>
           <h1 className="text-3xl font-bold text-gray-900">Panchtatva</h1>
           <p className="text-gray-600 mt-2">Justice Automation System</p>
+          
+          {/* Debug info */}
+          <div className="mt-4 p-2 bg-gray-100 rounded text-xs">
+            <p>Debug: Step = {currentStep}, Mode = {authMode}</p>
+            <p>Email = {formData.email || 'empty'}</p>
+            <button 
+              onClick={() => {
+                console.log('Test button clicked')
+                setCurrentStep(currentStep === 'email' ? 'otp' : 'email')
+              }}
+              className="mt-2 px-3 py-1 bg-blue-500 text-white rounded text-xs"
+            >
+              Test: Toggle Step ({currentStep === 'email' ? 'email→otp' : 'otp→email'})
+            </button>
+          </div>
         </div>
 
+        {/* Auth Card */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                {getIcon()}
-                <CardTitle>{getTitle()}</CardTitle>
+                {pageInfo.icon}
+                <CardTitle>{pageInfo.title}</CardTitle>
               </div>
-              {(mode !== 'signin' || step !== 'email') && (
+              {currentStep === 'otp' && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  onClick={() => {
-                    if (step === 'otp') {
-                      setStep('email')
-                      setOtp('')
-                      setError('')
-                      setSuccess('')
-                    } else {
-                      setMode('signin')
-                      resetForm()
-                    }
-                  }}
+                  onClick={() => setCurrentStep('email')}
                 >
                   <ArrowLeft className="h-4 w-4" />
                 </Button>
               )}
             </div>
-            <CardDescription>{getDescription()}</CardDescription>
+            <CardDescription>{pageInfo.description}</CardDescription>
           </CardHeader>
+          
           <CardContent className="space-y-4">
+            {/* Error/Success Messages */}
             {error && (
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-
             {success && (
               <Alert>
                 <AlertDescription>{success}</AlertDescription>
               </Alert>
             )}
 
-            {step === 'email' ? (
+            {/* Email Step */}
+            {currentStep === 'email' && (
               <>
-                {mode === 'register' && (
+                {authMode === 'register' && (
                   <>
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Full Name</label>
                       <Input
                         type="text"
                         placeholder="Enter your full name"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
+                        value={formData.name}
+                        onChange={(e) => handleInputChange('name', e.target.value)}
                         disabled={loading}
                       />
                     </div>
@@ -239,8 +239,8 @@ const AuthPage = () => {
                       <label className="text-sm font-medium">Role</label>
                       <select
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        value={role}
-                        onChange={(e) => setRole(e.target.value as 'client' | 'lawyer' | 'judge')}
+                        value={formData.role}
+                        onChange={(e) => handleInputChange('role', e.target.value)}
                         disabled={loading}
                       >
                         <option value="client">Client</option>
@@ -248,9 +248,9 @@ const AuthPage = () => {
                         <option value="judge">Judge</option>
                       </select>
                       <p className="text-xs text-gray-500">
-                        {role === 'client' && 'Upload cases and track their progress'}
-                        {role === 'lawyer' && 'Manage assigned cases and set availability'}
-                        {role === 'judge' && 'Review priority queue and accept cases'}
+                        {formData.role === 'client' && 'Upload cases and track their progress'}
+                        {formData.role === 'lawyer' && 'Manage assigned cases and set availability'}
+                        {formData.role === 'judge' && 'Review priority queue and accept cases'}
                       </p>
                     </div>
                   </>
@@ -261,40 +261,33 @@ const AuthPage = () => {
                   <Input
                     type="email"
                     placeholder="Enter your email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    value={formData.email}
+                    onChange={(e) => handleInputChange('email', e.target.value)}
                     disabled={loading}
                   />
                 </div>
 
                 <Button 
                   type="button"
-                  onClick={(e) => {
-                    console.log('Button clicked!', { mode, email, name })
-                    e.preventDefault()
-                    e.stopPropagation()
-                    
-                    if (mode === 'forgot') {
-                      handleForgotPassword(e)
-                    } else {
-                      handleSendOTP(e)
-                    }
-                  }} 
-                  disabled={!email || (mode === 'register' && !name) || loading}
+                  onClick={handleSendOTP}
+                  disabled={!formData.email || (authMode === 'register' && !formData.name) || loading}
                   className="w-full"
                 >
                   {loading ? <LoadingSpinner size="sm" className="mr-2" /> : null}
-                  {mode === 'register' ? 'Create Account' : mode === 'forgot' ? 'Send Reset Code' : 'Send OTP'}
+                  {authMode === 'register' ? 'Create Account' : authMode === 'forgot' ? 'Send Reset Code' : 'Send OTP'}
                 </Button>
               </>
-            ) : (
+            )}
+
+            {/* OTP Step */}
+            {currentStep === 'otp' && (
               <>
                 <div className="space-y-2">
                   <Input
                     type="text"
                     placeholder="Enter 6-digit OTP"
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    value={formData.otp}
+                    onChange={(e) => handleInputChange('otp', e.target.value.replace(/\D/g, '').slice(0, 6))}
                     disabled={loading}
                     className="text-center text-lg tracking-widest"
                   />
@@ -308,24 +301,19 @@ const AuthPage = () => {
                 
                 <Button 
                   type="button"
-                  onClick={(e) => {
-                    console.log('Verify button clicked!', { mode, otp })
-                    e.preventDefault()
-                    e.stopPropagation()
-                    handleVerifyOTP(e)
-                  }} 
-                  disabled={otp.length !== 6 || loading}
+                  onClick={handleVerifyOTP}
+                  disabled={formData.otp.length !== 6 || loading}
                   className="w-full"
                 >
                   {loading ? <LoadingSpinner size="sm" className="mr-2" /> : null}
-                  {mode === 'forgot' ? 'Reset Password' : 'Verify & Continue'}
+                  {authMode === 'forgot' ? 'Reset Password' : 'Verify & Continue'}
                 </Button>
                 
                 {countdown === 0 && (
                   <Button
                     type="button"
                     variant="link"
-                    onClick={mode === 'forgot' ? handleForgotPassword : handleSendOTP}
+                    onClick={handleResendOTP}
                     disabled={loading}
                     className="w-full text-sm"
                   >
@@ -335,17 +323,15 @@ const AuthPage = () => {
               </>
             )}
 
-            {step === 'email' && (
+            {/* Navigation Links */}
+            {currentStep === 'email' && (
               <div className="space-y-3 pt-4 border-t">
-                {mode === 'signin' && (
+                {authMode === 'signin' && (
                   <>
                     <Button
                       type="button"
                       variant="link"
-                      onClick={() => {
-                        setMode('register')
-                        resetForm()
-                      }}
+                      onClick={() => setAuthMode('register')}
                       className="w-full text-sm"
                     >
                       Don't have an account? Create one
@@ -353,10 +339,7 @@ const AuthPage = () => {
                     <Button
                       type="button"
                       variant="link"
-                      onClick={() => {
-                        setMode('forgot')
-                        resetForm()
-                      }}
+                      onClick={() => setAuthMode('forgot')}
                       className="w-full text-sm"
                     >
                       Forgot your password?
@@ -364,28 +347,22 @@ const AuthPage = () => {
                   </>
                 )}
                 
-                {mode === 'register' && (
+                {authMode === 'register' && (
                   <Button
                     type="button"
                     variant="link"
-                    onClick={() => {
-                      setMode('signin')
-                      resetForm()
-                    }}
+                    onClick={() => setAuthMode('signin')}
                     className="w-full text-sm"
                   >
                     Already have an account? Sign in
                   </Button>
                 )}
                 
-                {mode === 'forgot' && (
+                {authMode === 'forgot' && (
                   <Button
                     type="button"
                     variant="link"
-                    onClick={() => {
-                      setMode('signin')
-                      resetForm()
-                    }}
+                    onClick={() => setAuthMode('signin')}
                     className="w-full text-sm"
                   >
                     Remember your password? Sign in

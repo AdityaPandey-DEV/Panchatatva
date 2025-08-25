@@ -72,7 +72,18 @@ router.post('/send-otp',
         });
         await user.save();
         
-        logger.info(`New user created: ${email}`);
+        // Ensure user has an ID after save
+        if (!user._id) {
+          throw new AppError('Failed to create user', 500, 'USER_CREATION_FAILED');
+        }
+        
+        logger.info(`New user created: ${email} with ID: ${user._id}`);
+      }
+      
+      // Ensure user has valid ID
+      if (!user._id) {
+        logger.error(`User object missing ID: ${email}`);
+        throw new AppError('User validation failed', 500, 'USER_VALIDATION_FAILED');
       }
       
       // Check if user is locked

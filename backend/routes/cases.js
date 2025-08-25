@@ -246,27 +246,17 @@ router.get('/:id',
 );
 
 // @route   GET /api/cases
-// @desc    Get cases list (role-based)
+// @desc    Get cases based on user role and filters
 // @access  Private
 router.get('/',
   auth,
   [
-    query('status')
-      .optional()
-      .isIn(['intake', 'processing', 'classified', 'assigned', 'accepted', 'in_progress', 'completed', 'archived'])
-      .withMessage('Invalid status'),
-    query('urgency')
-      .optional()
-      .isIn(['URGENT', 'MODERATE', 'LOW'])
-      .withMessage('Invalid urgency'),
-    query('page')
-      .optional()
-      .isInt({ min: 1 })
-      .withMessage('Page must be a positive integer'),
-    query('limit')
-      .optional()
-      .isInt({ min: 1, max: 100 })
-      .withMessage('Limit must be between 1 and 100'),
+    query('status').optional().isIn(['intake', 'processing', 'classified', 'assigned', 'accepted', 'in_progress', 'completed', 'archived', 'error']),
+    query('urgency').optional().isIn(['URGENT', 'MODERATE', 'LOW']),
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('sortBy').optional().isIn(['submittedAt', 'updatedAt', 'finalUrgency', 'status']),
+    query('sortOrder').optional().isIn(['asc', 'desc'])
   ],
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
@@ -277,10 +267,16 @@ router.get('/',
         errors: errors.array()
       });
     }
-    
-    const { status, urgency, page = 1, limit = 20 } = req.query;
-    const skip = (page - 1) * limit;
-    
+
+    const {
+      status,
+      urgency,
+      page = 1,
+      limit = 20,
+      sortBy = 'submittedAt',
+      sortOrder = 'desc'
+    } = req.query;
+
     // Build query based on user role
     let query = {};
     
@@ -295,42 +291,285 @@ router.get('/',
         query['assignment.judgeId'] = req.user.id;
         break;
       case 'admin':
-        // No additional filters for admin
+        // Admin can see all cases
         break;
       default:
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied'
-        });
+        throw new AppError('Invalid user role', 403, 'INVALID_ROLE');
     }
-    
-    // Add optional filters
+
+    // Add filters
     if (status) query.status = status;
     if (urgency) query.finalUrgency = urgency;
+
+    // Build sort object
+    const sort = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    // Execute query with pagination
+    const skip = (page - 1) * limit;
     
-    // Execute query
-    const cases = await Case.find(query)
-      .populate('clientId', 'email clientProfile')
-      .populate('assignment.judgeId', 'email judgeProfile')
-      .populate('assignment.lawyerId', 'email lawyerProfile')
-      .sort({ submittedAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Case.countDocuments(query);
-    
-    // Filter cases based on role permissions
-    const filteredCases = cases.map(caseDoc => caseDoc.getSummary(req.user.role));
-    
+    const [cases, total] = await Promise.all([
+      Case.find(query)
+        .sort(sort)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('clientId', 'email profile.name')
+        .populate('assignment.judgeId', 'email profile.name')
+        .populate('assignment.lawyerId', 'email profile.name')
+        .select('-extractedText -accessLog -encryptedFields'),
+      Case.countDocuments(query)
+    ]);
+
+    // Transform cases based on user role
+    const transformedCases = cases.map(caseDoc => caseDoc.getSummary(req.user.role));
+
     res.status(200).json({
       success: true,
       data: {
-        cases: filteredCases,
+        cases: transformedCases,
         pagination: {
-          current: parseInt(page),
+          page: parseInt(page),
           limit: parseInt(limit),
           total,
           pages: Math.ceil(total / limit)
+        }
+      }
+    });
+  })
+);
+
+// @route   PUT /api/cases/:id/status
+// @desc    Update case status
+// @access  Private (Role-based)
+router.put('/:id/status',
+  auth,
+  [
+    param('id').isMongoId().withMessage('Invalid case ID'),
+    body('status')
+      .isIn(['intake', 'processing', 'classified', 'assigned', 'accepted', 'in_progress', 'completed', 'archived', 'error'])
+      .withMessage('Invalid status'),
+    body('comment').optional().trim().isLength({ max: 500 }).withMessage('Comment too long')
+  ],
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { id } = req.params;
+    const { status, comment } = req.body;
+
+    const caseDoc = await Case.findById(id);
+    if (!caseDoc) {
+      throw new AppError('Case not found', 404, 'CASE_NOT_FOUND');
+    }
+
+    // Check permissions
+    if (!canUpdateCaseStatus(req.user, caseDoc, status)) {
+      throw new AppError('Insufficient permissions to update case status', 403, 'INSUFFICIENT_PERMISSIONS');
+    }
+
+    // Update status
+    const oldStatus = caseDoc.status;
+    caseDoc.status = status;
+
+    // Update timestamps based on status
+    if (status === 'accepted') {
+      caseDoc.acceptedAt = new Date();
+    } else if (status === 'completed') {
+      caseDoc.completedAt = new Date();
+    }
+
+    await caseDoc.save();
+
+    // Log status change
+    await AuditLog.createEntry({
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      actorRole: req.user.role,
+      action: 'case_status_updated',
+      targetType: 'case',
+      targetId: caseDoc._id,
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      metadata: {
+        oldStatus,
+        newStatus: status,
+        comment
+      },
+      severity: 'medium'
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Case status updated successfully',
+      data: {
+        case: {
+          id: caseDoc._id,
+          status: caseDoc.status,
+          updatedAt: caseDoc.updatedAt
+        }
+      }
+    });
+  })
+);
+
+// @route   POST /api/cases/:id/accept
+// @desc    Accept case assignment
+// @access  Private (Judge, Lawyer)
+router.post('/:id/accept',
+  auth,
+  authorize('judge', 'lawyer'),
+  [
+    param('id').isMongoId().withMessage('Invalid case ID')
+  ],
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const caseDoc = await Case.findById(id);
+    
+    if (!caseDoc) {
+      throw new AppError('Case not found', 404, 'CASE_NOT_FOUND');
+    }
+
+    // Check if user is assigned to this case
+    if (req.user.role === 'judge' && caseDoc.assignment?.judgeId?.toString() !== req.user.id) {
+      throw new AppError('You are not assigned to this case', 403, 'NOT_ASSIGNED');
+    }
+    
+    if (req.user.role === 'lawyer' && caseDoc.assignment?.lawyerId?.toString() !== req.user.id) {
+      throw new AppError('You are not assigned to this case', 403, 'NOT_ASSIGNED');
+    }
+
+    // Update acceptance status
+    if (req.user.role === 'judge') {
+      caseDoc.assignment.acceptedByJudge = true;
+      caseDoc.assignment.judgeAcceptedAt = new Date();
+    } else if (req.user.role === 'lawyer') {
+      caseDoc.assignment.acceptedByLawyer = true;
+      caseDoc.assignment.lawyerAcceptedAt = new Date();
+    }
+
+    // If both have accepted, update case status
+    if (caseDoc.assignment.acceptedByJudge && caseDoc.assignment.acceptedByLawyer) {
+      caseDoc.status = 'accepted';
+      caseDoc.acceptedAt = new Date();
+    }
+
+    await caseDoc.save();
+
+    // Log acceptance
+    await AuditLog.createEntry({
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      actorRole: req.user.role,
+      action: 'case_accepted',
+      targetType: 'case',
+      targetId: caseDoc._id,
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      metadata: {
+        role: req.user.role,
+        caseNumber: caseDoc.caseNumber
+      },
+      severity: 'low'
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Case accepted successfully',
+      data: {
+        case: {
+          id: caseDoc._id,
+          status: caseDoc.status,
+          assignment: caseDoc.assignment
+        }
+      }
+    });
+  })
+);
+
+// @route   POST /api/cases/:id/reject
+// @desc    Reject case assignment
+// @access  Private (Judge, Lawyer)
+router.post('/:id/reject',
+  auth,
+  authorize('judge', 'lawyer'),
+  [
+    param('id').isMongoId().withMessage('Invalid case ID'),
+    body('reason').trim().isLength({ min: 10, max: 500 }).withMessage('Reason must be between 10 and 500 characters')
+  ],
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    const caseDoc = await Case.findById(id);
+    
+    if (!caseDoc) {
+      throw new AppError('Case not found', 404, 'CASE_NOT_FOUND');
+    }
+
+    // Check if user is assigned to this case
+    if (req.user.role === 'judge' && caseDoc.assignment?.judgeId?.toString() !== req.user.id) {
+      throw new AppError('You are not assigned to this case', 403, 'NOT_ASSIGNED');
+    }
+    
+    if (req.user.role === 'lawyer' && caseDoc.assignment?.lawyerId?.toString() !== req.user.id) {
+      throw new AppError('You are not assigned to this case', 403, 'NOT_ASSIGNED');
+    }
+
+    // Mark for reassignment
+    caseDoc.assignment.reassignmentRequested = true;
+    caseDoc.assignment.reassignmentReason = reason;
+    caseDoc.status = 'classified'; // Back to classified for reassignment
+
+    await caseDoc.save();
+
+    // Log rejection
+    await AuditLog.createEntry({
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      actorRole: req.user.role,
+      action: 'case_rejected',
+      targetType: 'case',
+      targetId: caseDoc._id,
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      metadata: {
+        role: req.user.role,
+        reason,
+        caseNumber: caseDoc.caseNumber
+      },
+      severity: 'medium'
+    });
+
+    // TODO: Trigger reassignment process
+    // setImmediate(() => {
+    //   assignmentService.reassignCase(caseDoc._id).catch(error => {
+    //     logger.error(`Reassignment failed for case ${caseDoc.caseNumber}:`, error);
+    //   });
+    // });
+
+    res.status(200).json({
+      success: true,
+      message: 'Case rejected successfully',
+      data: {
+        case: {
+          id: caseDoc._id,
+          status: caseDoc.status,
+          reassignmentRequested: true
         }
       }
     });
@@ -445,6 +684,29 @@ function checkCaseAccess(caseDoc, user) {
     default:
       return false;
   }
+}
+
+// Helper method to check if user can update case status
+function canUpdateCaseStatus(user, caseDoc, newStatus) {
+  // Admin can update any status
+  if (user.role === 'admin') return true;
+  
+  // Client can only update their own cases to certain statuses
+  if (user.role === 'client' && caseDoc.clientId.toString() === user.id) {
+    return ['intake', 'processing'].includes(newStatus);
+  }
+  
+  // Judge can update cases they're assigned to
+  if (user.role === 'judge' && caseDoc.assignment?.judgeId?.toString() === user.id) {
+    return ['accepted', 'in_progress', 'completed'].includes(newStatus);
+  }
+  
+  // Lawyer can update cases they're assigned to
+  if (user.role === 'lawyer' && caseDoc.assignment?.lawyerId?.toString() === user.id) {
+    return ['accepted', 'in_progress', 'completed'].includes(newStatus);
+  }
+  
+  return false;
 }
 
 // Import required services

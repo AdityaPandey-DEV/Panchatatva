@@ -10,6 +10,8 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const caseRoutes = require('./routes/cases');
 const adminRoutes = require('./routes/admin');
+const dashboardRoutes = require('./routes/dashboard');
+const fileRoutes = require('./routes/files');
 const { errorHandler } = require('./middleware/errorHandler');
 const { auditLogger } = require('./middleware/auditLogger');
 const logger = require('./utils/logger');
@@ -56,6 +58,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cases', caseRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/files', fileRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

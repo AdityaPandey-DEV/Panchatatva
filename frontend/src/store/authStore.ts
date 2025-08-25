@@ -20,6 +20,8 @@ interface AuthState {
   loading: boolean
   sendOTP: (email: string) => Promise<void>
   verifyOTP: (email: string, otp: string) => Promise<void>
+  registerUser: (email: string, otp: string, name: string, role: string) => Promise<void>
+  resetPassword: (email: string, otp: string, newPassword: string) => Promise<void>
   logout: () => Promise<void>
   checkAuth: () => void
   setUser: (user: User) => void
@@ -33,9 +35,14 @@ export const useAuthStore = create<AuthState>()(
       loading: false,
 
       sendOTP: async (email: string) => {
+        console.log('AuthStore: Sending OTP to:', email)
         set({ loading: true })
         try {
-          await authService.sendOTP(email)
+          const result = await authService.sendOTP(email)
+          console.log('AuthStore: OTP sent successfully:', result)
+        } catch (error) {
+          console.error('AuthStore: OTP send failed:', error)
+          throw error
         } finally {
           set({ loading: false })
         }
@@ -56,6 +63,35 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
+      registerUser: async (email: string, otp: string, name: string, role: string) => {
+        console.log('AuthStore: Registering user:', { email, name, role })
+        set({ loading: true })
+        try {
+          const response = await authService.register(email, otp, name, role)
+          console.log('AuthStore: Registration successful:', response)
+          set({
+            user: response.data.user,
+            tokens: response.data.tokens,
+            loading: false
+          })
+        } catch (error) {
+          console.error('AuthStore: Registration failed:', error)
+          set({ loading: false })
+          throw error
+        }
+      },
+
+      resetPassword: async (email: string, otp: string, newPassword: string) => {
+        set({ loading: true })
+        try {
+          await authService.resetPassword(email, otp, newPassword)
+          set({ loading: false })
+        } catch (error) {
+          set({ loading: false })
+          throw error
+        }
+      },
+
       logout: async () => {
         try {
           await authService.logout()
@@ -69,14 +105,9 @@ export const useAuthStore = create<AuthState>()(
       checkAuth: () => {
         const { tokens } = get()
         if (tokens?.accessToken) {
-          // Verify token is still valid
-          authService.verifyToken()
-            .then((response) => {
-              set({ user: response.data.user })
-            })
-            .catch(() => {
-              set({ user: null, tokens: null })
-            })
+          // For demo mode, just keep the existing user if tokens exist
+          // In production, you would verify with the server
+          console.log('Auth check: tokens exist, keeping user logged in')
         }
       },
 

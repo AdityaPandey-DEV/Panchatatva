@@ -137,22 +137,24 @@ router.post('/send-otp',
     } catch (error) {
       logger.error('Send OTP error:', error);
       
-      // Log failed attempt
-      await AuditLog.createEntry({
-        actorId: user?._id || null,
-        actorEmail: email,
-        actorRole: user?.role || 'unknown',
-        action: 'otp_sent',
-        targetType: 'user',
-        targetId: user?._id || null,
-        ip: req.ip,
-        userAgent: req.get('User-Agent'),
-        metadata: { 
-          success: false,
-          error: error.message 
-        },
-        severity: 'medium'
-      });
+      // Log failed attempt only if user exists
+      if (user) {
+        await AuditLog.createEntry({
+          actorId: user._id,
+          actorEmail: email,
+          actorRole: user.role,
+          action: 'otp_sent',
+          targetType: 'user',
+          targetId: user._id,
+          ip: req.ip,
+          userAgent: req.get('User-Agent'),
+          metadata: { 
+            success: false,
+            error: error.message 
+          },
+          severity: 'medium'
+        });
+      }
       
       throw error;
     }
@@ -587,5 +589,252 @@ router.delete('/sessions/:sessionId', sensitiveOpAuth, asyncHandler(async (req, 
     message: 'Session revoked successfully'
   });
 }));
+
+// @route   POST /api/auth/register
+// @desc    Register new user with OTP verification
+// @access  Public
+router.post('/register',
+  loginLimiter,
+  [
+    body('email')
+      .isEmail()
+      .normalizeEmail()
+      .withMessage('Please provide a valid email address'),
+    body('otp')
+      .isLength({ min: 6, max: 6 })
+      .isNumeric()
+      .withMessage('OTP must be a 6-digit number'),
+    body('profile.name')
+      .trim()
+      .isLength({ min: 2, max: 100 })
+      .withMessage('Name must be between 2 and 100 characters'),
+    body('profile.role')
+      .isIn(['client', 'lawyer', 'judge'])
+      .withMessage('Role must be client, lawyer, or judge'),
+  ],
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+    
+    const { email, otp, profile } = req.body;
+    
+    try {
+      const user = await User.findOne({ email });
+      
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid credentials'
+        });
+      }
+      
+      // Check if user already has profile (already registered)
+      if (user.profile && user.profile.name) {
+        return res.status(409).json({
+          success: false,
+          message: 'User already registered. Please sign in instead.'
+        });
+      }
+      
+      // Verify OTP
+      const isValidOTP = await user.verifyOTP(otp);
+      
+      if (!isValidOTP) {
+        user.otpAttempts += 1;
+        if (user.otpAttempts >= 5) {
+          user.otpLockedUntil = new Date(Date.now() + 30 * 60 * 1000);
+        }
+        await user.save();
+        
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid or expired OTP'
+        });
+      }
+      
+      // Update user with profile information
+      user.profile = {
+        name: profile.name,
+        role: profile.role,
+        createdAt: new Date()
+      };
+      user.role = profile.role;
+      user.isVerified = true;
+      user.hasProfile = true;
+      
+      // Clear OTP data
+      user.otpHash = undefined;
+      user.otpExpiresAt = undefined;
+      user.otpAttempts = 0;
+      user.otpLockedUntil = undefined;
+      
+      await user.save();
+      
+      // Generate JWT tokens
+      const tokens = jwtService.generateTokens(user._id);
+      
+      // Add JWT session
+      await user.addJWTSession(
+        tokens.tokenId || 'default-token-id',
+        req.get('User-Agent'),
+        req.ip,
+        req.get('User-Agent'),
+        new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+      );
+      
+      // Log successful registration
+      await AuditLog.createEntry({
+        actorId: user._id,
+        actorEmail: user.email,
+        actorRole: user.role,
+        action: 'user_created',
+        targetType: 'user',
+        targetId: user._id,
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        metadata: { 
+          role: profile.role,
+          name: profile.name
+        },
+        severity: 'low'
+      });
+      
+      // Return user data and tokens
+      const userData = {
+        id: user._id,
+        email: user.email,
+        role: user.role,
+        profile: user.profile,
+        isVerified: user.isVerified,
+        hasProfile: user.hasProfile
+      };
+      
+      res.status(201).json({
+        success: true,
+        message: 'Registration successful',
+        data: {
+          user: userData,
+          tokens
+        }
+      });
+      
+    } catch (error) {
+      logger.error('Registration error:', error);
+      
+      // Don't log failed registration attempts to avoid validation errors
+      logger.error('Registration failed:', { email, error: error.message });
+      
+      throw error;
+    }
+  })
+);
+
+// @route   POST /api/auth/reset-password
+// @desc    Reset password with OTP verification
+// @access  Public
+router.post('/reset-password',
+  loginLimiter,
+  [
+    body('email')
+      .isEmail()
+      .normalizeEmail()
+      .withMessage('Please provide a valid email address'),
+    body('otp')
+      .isLength({ min: 6, max: 6 })
+      .isNumeric()
+      .withMessage('OTP must be a 6-digit number'),
+    body('newPassword')
+      .isLength({ min: 8, max: 128 })
+      .withMessage('Password must be between 8 and 128 characters')
+      .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+      .withMessage('Password must contain at least one lowercase letter, one uppercase letter, one number, and one special character'),
+  ],
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+    
+    const { email, otp, newPassword } = req.body;
+    
+    try {
+      const user = await User.findOne({ email });
+      
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid credentials'
+        });
+      }
+      
+      // Verify OTP
+      const isValidOTP = await user.verifyOTP(otp);
+      
+      if (!isValidOTP) {
+        user.otpAttempts += 1;
+        if (user.otpAttempts >= 5) {
+          user.otpLockedUntil = new Date(Date.now() + 30 * 60 * 1000);
+        }
+        await user.save();
+        
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid or expired OTP'
+        });
+      }
+      
+      // Update password (will be hashed by pre-save middleware)
+      user.password = newPassword;
+      
+      // Clear OTP data
+      user.otpHash = undefined;
+      user.otpExpiresAt = undefined;
+      user.otpAttempts = 0;
+      user.otpLockedUntil = undefined;
+      
+      // Revoke all existing sessions for security
+      user.sessions = [];
+      
+      await user.save();
+      
+      // Log password reset
+      await AuditLog.createEntry({
+        actorId: user._id,
+        actorEmail: user.email,
+        actorRole: user.role,
+        action: 'user_updated',
+        targetType: 'user',
+        targetId: user._id,
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        metadata: { success: true, action: 'password_reset' },
+        severity: 'medium'
+      });
+      
+      res.status(200).json({
+        success: true,
+        message: 'Password reset successful. Please sign in with your new password.'
+      });
+      
+    } catch (error) {
+      logger.error('Password reset error:', error);
+      
+      // Don't log failed password reset attempts to avoid validation errors
+      logger.error('Password reset failed:', { email, error: error.message });
+      
+      throw error;
+    }
+  })
+);
 
 module.exports = router;

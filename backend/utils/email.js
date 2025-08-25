@@ -3,7 +3,7 @@ const logger = require('./logger');
 
 class EmailService {
   constructor() {
-    this.transporter = nodemailer.createTransporter({
+    this.transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST || 'smtp.gmail.com',
       port: parseInt(process.env.EMAIL_PORT) || 587,
       secure: false, // true for 465, false for other ports
@@ -30,6 +30,13 @@ class EmailService {
   }
   
   async sendOTP(email, otp, name = null) {
+    // In development mode, just log the OTP to console
+    if (process.env.NODE_ENV === 'development') {
+      logger.info(`🔐 DEVELOPMENT MODE - OTP for ${email}: ${otp}`);
+      console.log(`\n🔐 OTP for ${email}: ${otp}\n`);
+      return { success: true, messageId: 'dev-mode-' + Date.now() };
+    }
+    
     const mailOptions = {
       from: {
         name: 'Panchtatva Justice System',
